@@ -256,31 +256,66 @@ def display_prediction_scores(myvariant_data):
     
     predictions = {}
     
+    def safe_extract_value(data, key):
+        """Safely extract a value, handling lists by taking the first element."""
+        if key not in data:
+            return None
+        value = data[key]
+        if isinstance(value, list):
+            return value[0] if value else None
+        return value
+    
     # SIFT
     if 'sift' in dbnsfp:
         sift_data = dbnsfp['sift']
         if isinstance(sift_data, dict):
-            if 'score' in sift_data:
-                predictions['SIFT Score'] = sift_data['score']
-            if 'pred' in sift_data:
-                predictions['SIFT Prediction'] = sift_data['pred']
+            score = safe_extract_value(sift_data, 'score')
+            pred = safe_extract_value(sift_data, 'pred')
+            if score is not None:
+                predictions['SIFT Score'] = score
+            if pred is not None:
+                predictions['SIFT Prediction'] = pred
+    
+    # Handle direct dbnsfp fields (like in your error)
+    score = safe_extract_value(dbnsfp, 'sift_score')
+    pred = safe_extract_value(dbnsfp, 'sift_pred')
+    if score is not None:
+        predictions['SIFT Score'] = score
+    if pred is not None:
+        predictions['SIFT Prediction'] = pred
     
     # PolyPhen
     if 'polyphen2' in dbnsfp:
         pp2_data = dbnsfp['polyphen2']
         if isinstance(pp2_data, dict):
             if 'hdiv' in pp2_data and isinstance(pp2_data['hdiv'], dict):
-                if 'score' in pp2_data['hdiv']:
-                    predictions['PolyPhen2 HDiv Score'] = pp2_data['hdiv']['score']
-                if 'pred' in pp2_data['hdiv']:
-                    predictions['PolyPhen2 HDiv Prediction'] = pp2_data['hdiv']['pred']
+                score = safe_extract_value(pp2_data['hdiv'], 'score')
+                pred = safe_extract_value(pp2_data['hdiv'], 'pred')
+                if score is not None:
+                    predictions['PolyPhen2 HDiv Score'] = score
+                if pred is not None:
+                    predictions['PolyPhen2 HDiv Prediction'] = pred
+    
+    # Handle direct polyphen fields
+    pp_score = safe_extract_value(dbnsfp, 'polyphen2_hdiv_score')
+    pp_pred = safe_extract_value(dbnsfp, 'polyphen2_hdiv_pred')
+    if pp_score is not None:
+        predictions['PolyPhen2 Score'] = pp_score
+    if pp_pred is not None:
+        predictions['PolyPhen2 Prediction'] = pp_pred
     
     # CADD
     if 'cadd' in dbnsfp:
         cadd_data = dbnsfp['cadd']
         if isinstance(cadd_data, dict):
-            if 'phred' in cadd_data:
-                predictions['CADD Phred Score'] = cadd_data['phred']
+            score = safe_extract_value(cadd_data, 'phred')
+            if score is not None:
+                predictions['CADD Phred Score'] = score
+    
+    # Handle direct CADD field
+    cadd_score = safe_extract_value(dbnsfp, 'cadd_phred')
+    if cadd_score is not None:
+        predictions['CADD Phred Score'] = cadd_score
     
     return predictions if predictions else None
 
@@ -379,18 +414,38 @@ def main():
                     if annotations['myvariant_data']:
                         myv_data = annotations['myvariant_data']
                         
-                        # Basic info
+                        # Basic info - handle nested data structure
                         info_cols = st.columns(3)
+                        
+                        # Extract chromosome info
+                        chrom = (myv_data.get('hg38', {}).get('chr') or 
+                                myv_data.get('chr') or 
+                                myv_data.get('chrom') or 'N/A')
+                        
+                        # Extract position info  
+                        pos = (myv_data.get('hg38', {}).get('pos') or 
+                              myv_data.get('pos') or 
+                              myv_data.get('start') or 'N/A')
+                        
+                        # Extract ref/alt
+                        ref = (myv_data.get('hg38', {}).get('ref') or 
+                              myv_data.get('ref') or 'N/A')
+                        alt = (myv_data.get('hg38', {}).get('alt') or 
+                              myv_data.get('alt') or 'N/A')
+                        
                         with info_cols[0]:
-                            st.metric("Chromosome", myv_data.get('hg38', {}).get('chr', myv_data.get('chr', 'N/A')))
+                            st.metric("Chromosome", chrom)
                         with info_cols[1]:
-                            st.metric("Position", myv_data.get('hg38', {}).get('pos', myv_data.get('pos', 'N/A')))
+                            st.metric("Position", pos)
                         with info_cols[2]:
-                            st.metric("Change", f"{myv_data.get('ref', 'N/A')} → {myv_data.get('alt', 'N/A')}")
+                            st.metric("Change", f"{ref} → {alt}")
                         
                         # Gene info
-                        if myv_data.get('genename'):
-                            st.metric("Gene", myv_data['genename'])
+                        gene_name = (myv_data.get('genename') or 
+                                   myv_data.get('gene') or 
+                                   myv_data.get('symbol') or 'N/A')
+                        if gene_name != 'N/A':
+                            st.metric("Gene", gene_name)
                 
                 with tab2:
                     # Clinical significance
@@ -412,7 +467,14 @@ def main():
                             col_index = 0
                             for key, value in predictions.items():
                                 with pred_cols[col_index % 2]:
-                                    st.metric(key, value)
+                                    # Handle different value types safely
+                                    try:
+                                        if isinstance(value, (int, float)):
+                                            st.metric(key, f"{value:.3f}" if isinstance(value, float) else str(value))
+                                        else:
+                                            st.metric(key, str(value))
+                                    except Exception as e:
+                                        st.write(f"**{key}:** {value}")
                                 col_index += 1
                         else:
                             st.info("No functional prediction scores available")

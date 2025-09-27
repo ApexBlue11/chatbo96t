@@ -6,8 +6,6 @@ import time
 import re
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
-import plotly.express as px
-import plotly.graph_objects as go
 from io import StringIO
 
 # Configure Streamlit page
@@ -208,8 +206,8 @@ def get_variant_annotations(clingen_data):
     
     return annotations
 
-def create_frequency_plot(myvariant_data):
-    """Create a population frequency visualization."""
+def create_frequency_chart(myvariant_data):
+    """Create a population frequency visualization using Streamlit's built-in charting."""
     freq_data = []
     
     # Extract gnomAD frequencies
@@ -222,11 +220,7 @@ def create_frequency_plot(myvariant_data):
     
     if freq_data:
         df_freq = pd.DataFrame(freq_data)
-        fig = px.bar(df_freq, x='Population', y='Frequency', 
-                    title='Population Frequencies (gnomAD)',
-                    labels={'Frequency': 'Allele Frequency'})
-        fig.update_layout(xaxis_tickangle=-45)
-        return fig
+        return df_freq
     return None
 
 def display_clinical_significance(myvariant_data):
@@ -427,9 +421,9 @@ def main():
                     # Population frequencies
                     st.subheader("Population Frequencies")
                     if annotations['myvariant_data']:
-                        freq_plot = create_frequency_plot(annotations['myvariant_data'])
-                        if freq_plot:
-                            st.plotly_chart(freq_plot, use_container_width=True)
+                        freq_data = create_frequency_chart(annotations['myvariant_data'])
+                        if freq_data is not None:
+                            st.bar_chart(freq_data.set_index('Population')['Frequency'])
                         else:
                             st.info("No population frequency data available")
                 

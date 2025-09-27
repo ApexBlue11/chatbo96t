@@ -210,15 +210,66 @@ def create_frequency_chart(myvariant_data):
     """Create a population frequency visualization using Streamlit's built-in charting."""
     freq_data = []
     
-    # Extract gnomAD frequencies
+    # Extract frequencies from multiple possible locations in the data
+    
+    # 1. Check gnomAD exome data
+    gnomad_exome = myvariant_data.get('gnomad_exome', {})
+    if isinstance(gnomad_exome, dict) and 'af' in gnomad_exome:
+        af_data = gnomad_exome['af']
+        if isinstance(af_data, dict):
+            for pop, freq in af_data.items():
+                if isinstance(freq, (int, float)) and freq > 0:
+                    clean_name = pop.replace('af_', '').upper()
+                    freq_data.append({'Population': f'gnomAD Exome {clean_name}', 'Frequency': freq})
+    
+    # 2. Check gnomAD genome data  
+    gnomad_genome = myvariant_data.get('gnomad_genome', {})
+    if isinstance(gnomad_genome, dict) and 'af' in gnomad_genome:
+        af_data = gnomad_genome['af']
+        if isinstance(af_data, dict):
+            for pop, freq in af_data.items():
+                if isinstance(freq, (int, float)) and freq > 0:
+                    clean_name = pop.replace('af_', '').upper()
+                    freq_data.append({'Population': f'gnomAD Genome {clean_name}', 'Frequency': freq})
+    
+    # 3. Check dbNSFP 1000 Genomes data
+    dbnsfp = myvariant_data.get('dbnsfp', {})
+    if isinstance(dbnsfp, dict):
+        # 1000 Genomes Project data
+        kg_data = dbnsfp.get('1000gp3', {})
+        if isinstance(kg_data, dict):
+            # Overall frequency
+            if 'af' in kg_data and isinstance(kg_data['af'], (int, float)) and kg_data['af'] > 0:
+                freq_data.append({'Population': '1000G Overall', 'Frequency': kg_data['af']})
+            
+            # Population-specific frequencies
+            for pop in ['afr', 'amr', 'eas', 'eur', 'sas']:
+                if pop in kg_data and isinstance(kg_data[pop], dict):
+                    pop_freq = kg_data[pop].get('af')
+                    if isinstance(pop_freq, (int, float)) and pop_freq > 0:
+                        freq_data.append({'Population': f'1000G {pop.upper()}', 'Frequency': pop_freq})
+        
+        # ExAC data
+        exac_data = dbnsfp.get('exac', {})
+        if isinstance(exac_data, dict):
+            if 'af' in exac_data and isinstance(exac_data['af'], (int, float)) and exac_data['af'] > 0:
+                freq_data.append({'Population': 'ExAC Overall', 'Frequency': exac_data['af']})
+            
+            for pop in ['afr', 'amr', 'eas', 'fin', 'nfe', 'sas']:
+                if pop in exac_data:
+                    pop_freq = exac_data[pop].get('af') if isinstance(exac_data[pop], dict) else exac_data[pop]
+                    if isinstance(pop_freq, (int, float)) and pop_freq > 0:
+                        freq_data.append({'Population': f'ExAC {pop.upper()}', 'Frequency': pop_freq})
+    
+    # 4. Check any other frequency fields in the root
     for key, value in myvariant_data.items():
-        if 'gnomad' in key.lower() and 'af' in key.lower() and isinstance(value, (int, float)):
-            if value > 0:  # Only show non-zero frequencies
-                # Clean up the key for display
-                clean_key = key.replace('gnomad_', '').replace('_af', '').replace('_', ' ').title()
-                freq_data.append({'Population': clean_key, 'Frequency': value})
+        if 'af' in key.lower() and 'gnomad' in key.lower() and isinstance(value, (int, float)) and value > 0:
+            clean_key = key.replace('gnomad_', '').replace('_af', '').replace('_', ' ').title()
+            freq_data.append({'Population': clean_key, 'Frequency': value})
     
     if freq_data:
+        # Sort by frequency for better visualization
+        freq_data.sort(key=lambda x: x['Frequency'], reverse=True)
         df_freq = pd.DataFrame(freq_data)
         return df_freq
     return None
@@ -231,22 +282,77 @@ def display_clinical_significance(myvariant_data):
     
     clinical_info = {}
     
-    # Extract key clinical information
-    if 'clinical_significance' in clinvar:
-        clinical_info['Clinical Significance'] = clinvar['clinical_significance']
-    if 'review_status' in clinvar:
-        clinical_info['Review Status'] = clinvar['review_status']
-    if 'conditions' in clinvar:
-        conditions = clinvar['conditions']
-        if isinstance(conditions, list):
-            clinical_info['Associated Conditions'] = ', '.join([
-                cond.get('name', str(cond)) if isinstance(cond, dict) else str(cond) 
-                for cond in conditions
-            ])
-        else:
-            clinical_info['Associated Conditions'] = str(conditions)
+    # Extract key clinical information from different possible structures
+    clinical_significance = (clinvar.get('clinical_significance') or 
+                           clinvar.get('clnsig') or
+                           clinvar.get('clinicalsignificance'))
     
-    return clinical_info
+    if clinical_significance:
+        clinical_info['Clinical Significance'] = clinical_significance
+    
+    # Review status
+    review_status = (clinvar.get('review_status') or 
+                    clinvar.get('reviewstatus') or
+                    clinvar.get('review'))
+    if review_status:
+        clinical_info['Review Status'] = review_status
+    
+    # RCV accessions - handle the array structure from your data
+    rcv_data = clinvar.get('rcv', [])
+    if rcv_data and isinstance(rcv_data, list):
+        # Extract accession numbers and clinical significance from each RCV
+        accessions = []
+        significances = []
+        conditions = []
+        
+        for rcv in rcv_data:
+            if isinstance(rcv, dict):
+                if rcv.get('accession'):
+                    accessions.append(rcv['accession'])
+                if rcv.get('clinical_significance'):
+                    significances.append(rcv['clinical_significance'])
+                if rcv.get('conditions', {}).get('name'):
+                    conditions.append(rcv['conditions']['name'])
+        
+        if accessions:
+            clinical_info['RCV Accessions'] = ', '.join(accessions)
+        if significances:
+            # Get unique significances
+            unique_sigs = list(set(significances))
+            clinical_info['Clinical Significance'] = ', '.join(unique_sigs)
+        if conditions:
+            unique_conditions = list(set(conditions))
+            clinical_info['Associated Conditions'] = ', '.join(unique_conditions)
+    
+    # Variation ID and Allele ID
+    if clinvar.get('variation_id'):
+        clinical_info['Variation ID'] = clinvar['variation_id']
+    if clinvar.get('allele_id'):
+        clinical_info['Allele ID'] = clinvar['allele_id']
+    
+    # Gene information
+    gene_info = clinvar.get('gene', {})
+    if isinstance(gene_info, dict):
+        if gene_info.get('symbol'):
+            clinical_info['Gene Symbol'] = gene_info['symbol']
+        if gene_info.get('id'):
+            clinical_info['Gene ID'] = gene_info['id']
+    
+    # HGVS notations
+    hgvs_info = clinvar.get('hgvs', {})
+    if isinstance(hgvs_info, dict):
+        if hgvs_info.get('coding'):
+            clinical_info['HGVS Coding'] = hgvs_info['coding']
+        if hgvs_info.get('protein'):
+            clinical_info['HGVS Protein'] = hgvs_info['protein']
+        if hgvs_info.get('genomic'):
+            genomic = hgvs_info['genomic']
+            if isinstance(genomic, list):
+                clinical_info['HGVS Genomic'] = ', '.join(genomic)
+            else:
+                clinical_info['HGVS Genomic'] = str(genomic)
+    
+    return clinical_info if clinical_info else None
 
 def display_prediction_scores(myvariant_data):
     """Display functional prediction scores."""
@@ -422,16 +528,19 @@ def main():
                                 myv_data.get('chr') or 
                                 myv_data.get('chrom') or 'N/A')
                         
-                        # Extract position info  
-                        pos = (myv_data.get('hg38', {}).get('pos') or 
-                              myv_data.get('pos') or 
-                              myv_data.get('start') or 'N/A')
+                        # Extract position info from various possible locations
+                        hg38_data = myv_data.get('hg38', {})
+                        pos = (hg38_data.get('start') or hg38_data.get('end') or hg38_data.get('pos') or
+                              myv_data.get('pos') or myv_data.get('start') or 
+                              myv_data.get('vcf', {}).get('position') or 'N/A')
                         
                         # Extract ref/alt
                         ref = (myv_data.get('hg38', {}).get('ref') or 
-                              myv_data.get('ref') or 'N/A')
+                              myv_data.get('ref') or 
+                              myv_data.get('vcf', {}).get('ref') or 'N/A')
                         alt = (myv_data.get('hg38', {}).get('alt') or 
-                              myv_data.get('alt') or 'N/A')
+                              myv_data.get('alt') or 
+                              myv_data.get('vcf', {}).get('alt') or 'N/A')
                         
                         with info_cols[0]:
                             st.metric("Chromosome", chrom)

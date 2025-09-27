@@ -426,46 +426,62 @@ def display_comprehensive_myvariant_data(myvariant_data):
                 return value[0] if value else None
             return value
         
-        # Organize predictions by category
+        # Organize predictions by category with correct field paths
+        def extract_nested_value(data, path_list):
+            """Extract nested values from complex structures like polyphen2.hdiv.score"""
+            current = data
+            for key in path_list:
+                if isinstance(current, dict) and key in current:
+                    current = current[key]
+                else:
+                    return None
+            return current
+        
         prediction_categories = {
-            "Pathogenicity Predictors": {
-                "SIFT": ("sift_score", "sift_pred"),
-                "PolyPhen2 HDiv": ("polyphen2_hdiv_score", "polyphen2_hdiv_pred"),
-                "PolyPhen2 HVar": ("polyphen2_hvar_score", "polyphen2_hvar_pred"),
-                "FATHMM": ("fathmm_score", "fathmm_pred"),
-                "MutationTaster": ("mutationtaster_score", "mutationtaster_pred"),
-                "MutationAssessor": ("mutationassessor_score", "mutationassessor_pred"),
-                "PROVEAN": ("provean_score", "provean_pred"),
-                "MetaSVM": ("metasvm_score", "metasvm_pred"),
-                "MetaLR": ("metalr_score", "metalr_pred"),
-                "M-CAP": ("m_cap_score", "m_cap_pred"),
-                "REVEL": ("revel_score", None),
-                "MutPred": ("mutpred_score", None),
-            },
-            "Conservation Scores": {
-                "GERP++": ("gerp_nr", "gerp_rs"),
-                "PhyloP 100way": ("phylop100way_vertebrate", None),
-                "PhyloP 470way": ("phylop470way_mammalian", None),
-                "PhastCons 100way": ("phastcons100way_vertebrate", None),
-                "PhastCons 470way": ("phastcons470way_mammalian", None),
-                "SiPhy": ("siphy_29way_logodds", None),
-            },
-            "Ensemble Predictors": {
-                "CADD": ("cadd_phred", None),
-                "DANN": ("dann_score", None),
-                "Eigen": ("eigen_pc_phred", None),
-                "FATHMM-MKL": ("fathmm_mkl_coding_score", "fathmm_mkl_coding_pred"),
-                "FATHMM-XF": ("fathmm_xf_coding_score", "fathmm_xf_coding_pred"),
-                "GenoCanyon": ("genocanyon_score", None),
-                "Integrated FitCons": ("integrated_fitcons_score", None),
-            },
-            "Deep Learning": {
-                "PrimateAI": ("primateai_score", "primateai_pred"),
-                "DEOGEN2": ("deogen2_score", "deogen2_pred"),
-                "BayesDel": ("bayesdel_addaf_score", "bayesdel_addaf_pred"),
-                "ClinPred": ("clinpred_score", "clinpred_pred"),
-                "LIST-S2": ("list_s2_score", "list_s2_pred"),
-            }
+            "Pathogenicity Predictors": [
+                ("SIFT", ["sift", "score"], ["sift", "pred"]),
+                ("PolyPhen2 HDiv", ["polyphen2", "hdiv", "score"], ["polyphen2", "hdiv", "pred"]),
+                ("PolyPhen2 HVar", ["polyphen2", "hvar", "score"], ["polyphen2", "hvar", "pred"]),
+                ("FATHMM", ["fathmm", "score"], ["fathmm", "pred"]),
+                ("MutationTaster", ["mutationtaster", "score"], ["mutationtaster", "pred"]),
+                ("MutationAssessor", ["mutationassessor", "score"], ["mutationassessor", "pred"]),
+                ("PROVEAN", ["provean", "score"], ["provean", "pred"]),
+                ("MetaSVM", ["metasvm", "score"], ["metasvm", "pred"]),
+                ("MetaLR", ["metalr", "score"], ["metalr", "pred"]),
+                ("M-CAP", ["m-cap", "score"], ["m-cap", "pred"]),
+                ("REVEL", ["revel", "score"], None),
+                ("MutPred", ["mutpred", "score"], None),
+                ("LRT", ["lrt", "score"], ["lrt", "pred"]),
+            ],
+            "Conservation Scores": [
+                ("GERP++ NR", ["gerp++", "nr"], None),
+                ("GERP++ RS", ["gerp++", "rs"], None),
+                ("PhyloP 100way Vertebrate", ["phylop", "100way_vertebrate", "score"], None),
+                ("PhyloP 470way Mammalian", ["phylop", "470way_mammalian", "score"], None),
+                ("PhastCons 100way Vertebrate", ["phastcons", "100way_vertebrate", "score"], None),
+                ("PhastCons 470way Mammalian", ["phastcons", "470way_mammalian", "score"], None),
+                ("SiPhy 29way", ["siphy_29way", "logodds_score"], None),
+            ],
+            "Ensemble Predictors": [
+                ("CADD Phred", ["cadd", "phred"], None),
+                ("DANN", ["dann", "score"], None),
+                ("Eigen PC Phred", ["eigen-pc", "phred_coding"], None),
+                ("FATHMM-MKL", ["fathmm-mkl", "coding_score"], ["fathmm-mkl", "coding_pred"]),
+                ("FATHMM-XF", ["fathmm-xf", "coding_score"], ["fathmm-xf", "coding_pred"]),
+                ("GenoCanyon", ["genocanyon", "score"], None),
+                ("Integrated FitCons", ["fitcons", "integrated", "score"], None),
+                ("VEST4", ["vest4", "score"], None),
+                ("MVP", ["mvp", "score"], None),
+            ],
+            "Deep Learning": [
+                ("PrimateAI", ["primateai", "score"], ["primateai", "pred"]),
+                ("DEOGEN2", ["deogen2", "score"], ["deogen2", "pred"]),
+                ("BayesDel AddAF", ["bayesdel", "add_af", "score"], ["bayesdel", "add_af", "pred"]),
+                ("ClinPred", ["clinpred", "score"], ["clinpred", "pred"]),
+                ("LIST-S2", ["list-s2", "score"], ["list-s2", "pred"]),
+                ("AlphaMissense", ["alphamissense", "score"], ["alphamissense", "pred"]),
+                ("ESM1b", ["esm1b", "score"], ["esm1b", "pred"]),
+            ]
         }
         
         for category, predictors in prediction_categories.items():
@@ -474,9 +490,23 @@ def display_comprehensive_myvariant_data(myvariant_data):
             # Create a grid layout for predictors
             predictor_data = []
             
-            for predictor_name, (score_key, pred_key) in predictors.items():
-                score_val = safe_extract_value(dbnsfp, score_key)
-                pred_val = safe_extract_value(dbnsfp, pred_key) if pred_key else None
+            for predictor_info in predictors:
+                if len(predictor_info) == 3:
+                    predictor_name, score_path, pred_path = predictor_info
+                else:
+                    continue
+                
+                # Extract score
+                score_val = extract_nested_value(dbnsfp, score_path)
+                if isinstance(score_val, list) and score_val:
+                    score_val = score_val[0]  # Take first element if it's a list
+                
+                # Extract prediction  
+                pred_val = None
+                if pred_path:
+                    pred_val = extract_nested_value(dbnsfp, pred_path)
+                    if isinstance(pred_val, list) and pred_val:
+                        pred_val = pred_val[0]  # Take first element if it's a list
                 
                 if score_val is not None:
                     predictor_data.append({
@@ -496,10 +526,23 @@ def display_comprehensive_myvariant_data(myvariant_data):
                         else:
                             score_str = str(pred['Score'])
                         
+                        # Color code predictions
+                        prediction_text = pred['Prediction']
+                        if prediction_text in ['D', 'Damaging', 'DAMAGING']:
+                            prediction_color = "🔴"
+                        elif prediction_text in ['T', 'Tolerated', 'TOLERATED', 'B', 'Benign']:
+                            prediction_color = "🟢" 
+                        elif prediction_text in ['P', 'Possibly damaging', 'POSSIBLY_DAMAGING']:
+                            prediction_color = "🟡"
+                        else:
+                            prediction_color = ""
+                        
+                        display_pred = f"{prediction_color} {prediction_text}" if prediction_color else prediction_text
+                        
                         st.metric(
                             pred['Predictor'],
                             score_str,
-                            delta=pred['Prediction'] if pred['Prediction'] != 'N/A' else None
+                            delta=display_pred if display_pred != 'N/A' else None
                         )
             else:
                 st.info(f"No {category.lower()} data available")
@@ -816,46 +859,43 @@ def create_download_section(clingen_data, myvariant_data, vep_data, classificati
     """Create download section with proper state management."""
     st.subheader("📥 Download Data")
     
-    # Use session state to prevent rerun on download
-    if 'download_clicked' not in st.session_state:
-        st.session_state.download_clicked = False
-    
     col1, col2, col3 = st.columns(3)
     
     with col1:
         if clingen_data:
             clingen_json = json.dumps(clingen_data, indent=2)
+            # Use a unique key and help text
             st.download_button(
-                label="📋 Download ClinGen Data",
+                label="📋 ClinGen Data",
                 data=clingen_json,
-                file_name=f"clingen_{classification.extracted_identifier}.json",
+                file_name=f"clingen_{classification.extracted_identifier.replace(':', '_').replace('>', '_')}.json",
                 mime="application/json",
-                key="clingen_download",
-                help="Download ClinGen Allele Registry data"
+                key=f"clingen_dl_{classification.extracted_identifier}",
+                help="Download ClinGen Allele Registry data as JSON"
             )
     
     with col2:
         if myvariant_data:
             myvariant_json = json.dumps(myvariant_data, indent=2)
             st.download_button(
-                label="🔬 Download MyVariant Data",
+                label="🔬 MyVariant Data", 
                 data=myvariant_json,
-                file_name=f"myvariant_{classification.extracted_identifier}.json",
+                file_name=f"myvariant_{classification.extracted_identifier.replace(':', '_').replace('>', '_')}.json",
                 mime="application/json",
-                key="myvariant_download",
-                help="Download MyVariant.info annotations"
+                key=f"myvariant_dl_{classification.extracted_identifier}",
+                help="Download MyVariant.info annotations as JSON"
             )
     
     with col3:
         if vep_data:
             vep_json = json.dumps(vep_data, indent=2)
             st.download_button(
-                label="🧬 Download VEP Data",
-                data=vep_json,
-                file_name=f"vep_{classification.extracted_identifier}.json",
+                label="🧬 VEP Data",
+                data=vep_json, 
+                file_name=f"vep_{classification.extracted_identifier.replace(':', '_').replace('>', '_')}.json",
                 mime="application/json",
-                key="vep_download",
-                help="Download Ensembl VEP predictions"
+                key=f"vep_dl_{classification.extracted_identifier}",
+                help="Download Ensembl VEP predictions as JSON"
             )
 
 def main():
@@ -900,8 +940,12 @@ def main():
     
     analyze_button = st.button("🔬 Analyze Variant", type="primary", key="analyze_btn")
     
-    if analyze_button and user_input:
-        # Store the analysis in session state to prevent rerun issues
+    # Check if we should show results (either new analysis or existing session data)
+    should_analyze = analyze_button and user_input
+    should_show_results = False
+    
+    if should_analyze:
+        # Store the analysis in session state
         if 'analysis_data' not in st.session_state or st.session_state.get('last_query') != user_input:
             with st.spinner("Analyzing variant..."):
                 # Initialize router
@@ -929,11 +973,22 @@ def main():
                         'processing_time': processing_time
                     }
                     st.session_state.last_query = user_input
+                    should_show_results = True
                     
                 except Exception as e:
                     st.error(f"Analysis failed: {str(e)}")
                     st.exception(e)
                     st.stop()
+        else:
+            # Use existing data
+            should_show_results = True
+    
+    # Show results if we have analysis data in session state
+    elif 'analysis_data' in st.session_state and st.session_state.get('last_query'):
+        should_show_results = True
+    
+    # Display results section
+    if should_show_results and 'analysis_data' in st.session_state:
         
         # Retrieve analysis data from session state
         analysis_data = st.session_state.analysis_data
@@ -941,6 +996,20 @@ def main():
         clingen_data = analysis_data['clingen_data']
         annotations = analysis_data['annotations']
         processing_time = analysis_data['processing_time']
+        
+        # Show clear results button
+        col1, col2 = st.columns([1, 4])
+        with col1:
+            if st.button("🗑️ Clear Results", key="clear_results"):
+                # Clear session state
+                if 'analysis_data' in st.session_state:
+                    del st.session_state['analysis_data']
+                if 'last_query' in st.session_state:
+                    del st.session_state['last_query']
+                st.rerun()
+        
+        with col2:
+            st.markdown(f"**Analyzing:** {classification.extracted_identifier}")
         
         # Display classification info
         st.markdown('<div class="info-box">', unsafe_allow_html=True)

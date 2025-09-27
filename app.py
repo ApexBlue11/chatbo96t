@@ -56,6 +56,19 @@ st.markdown("""
     border-radius: 0.5rem;
     margin: 1rem 0;
 }
+.transcript-box {
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 0.5rem;
+    padding: 1rem;
+    margin: 0.5rem 0;
+}
+.prediction-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 1rem;
+    margin: 1rem 0;
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -206,224 +219,644 @@ def get_variant_annotations(clingen_data):
     
     return annotations
 
-def create_frequency_chart(myvariant_data):
-    """Create a population frequency visualization using Streamlit's built-in charting."""
-    freq_data = []
+def select_primary_vep_transcript(vep_data):
+    """Select the primary transcript for VEP analysis based on priority."""
+    if not vep_data or not vep_data[0].get('transcript_consequences'):
+        return None, "No transcript consequences found"
     
-    # Extract frequencies from multiple possible locations in the data
+    transcripts = vep_data[0]['transcript_consequences']
     
-    # 1. Check gnomAD exome data
-    gnomad_exome = myvariant_data.get('gnomad_exome', {})
-    if isinstance(gnomad_exome, dict) and 'af' in gnomad_exome:
-        af_data = gnomad_exome['af']
-        if isinstance(af_data, dict):
-            for pop, freq in af_data.items():
-                if isinstance(freq, (int, float)) and freq > 0:
-                    clean_name = pop.replace('af_', '').upper()
-                    freq_data.append({'Population': f'gnomAD Exome {clean_name}', 'Frequency': freq})
+    # Priority 1: MANE Select transcript
+    for t in transcripts:
+        # Check for MANE flags in various ways VEP might indicate it
+        flags = t.get('flags', [])
+        if 'MANE_SELECT' in flags or any('mane' in str(flag).lower() for flag in flags):
+            return t, "MANE Select"
     
-    # 2. Check gnomAD genome data  
-    gnomad_genome = myvariant_data.get('gnomad_genome', {})
-    if isinstance(gnomad_genome, dict) and 'af' in gnomad_genome:
-        af_data = gnomad_genome['af']
-        if isinstance(af_data, dict):
-            for pop, freq in af_data.items():
-                if isinstance(freq, (int, float)) and freq > 0:
-                    clean_name = pop.replace('af_', '').upper()
-                    freq_data.append({'Population': f'gnomAD Genome {clean_name}', 'Frequency': freq})
+    # Priority 2: Canonical transcript
+    for t in transcripts:
+        if t.get('canonical') == 1 or 'canonical' in t.get('flags', []):
+            return t, "Canonical"
     
-    # 3. Check dbNSFP 1000 Genomes data
-    dbnsfp = myvariant_data.get('dbnsfp', {})
-    if isinstance(dbnsfp, dict):
-        # 1000 Genomes Project data
-        kg_data = dbnsfp.get('1000gp3', {})
-        if isinstance(kg_data, dict):
-            # Overall frequency
-            if 'af' in kg_data and isinstance(kg_data['af'], (int, float)) and kg_data['af'] > 0:
-                freq_data.append({'Population': '1000G Overall', 'Frequency': kg_data['af']})
-            
-            # Population-specific frequencies
-            for pop in ['afr', 'amr', 'eas', 'eur', 'sas']:
-                if pop in kg_data and isinstance(kg_data[pop], dict):
-                    pop_freq = kg_data[pop].get('af')
-                    if isinstance(pop_freq, (int, float)) and pop_freq > 0:
-                        freq_data.append({'Population': f'1000G {pop.upper()}', 'Frequency': pop_freq})
-        
-        # ExAC data
-        exac_data = dbnsfp.get('exac', {})
-        if isinstance(exac_data, dict):
-            if 'af' in exac_data and isinstance(exac_data['af'], (int, float)) and exac_data['af'] > 0:
-                freq_data.append({'Population': 'ExAC Overall', 'Frequency': exac_data['af']})
-            
-            for pop in ['afr', 'amr', 'eas', 'fin', 'nfe', 'sas']:
-                if pop in exac_data:
-                    pop_freq = exac_data[pop].get('af') if isinstance(exac_data[pop], dict) else exac_data[pop]
-                    if isinstance(pop_freq, (int, float)) and pop_freq > 0:
-                        freq_data.append({'Population': f'ExAC {pop.upper()}', 'Frequency': pop_freq})
+    # Priority 3: First protein coding transcript with complete annotations
+    for t in transcripts:
+        if (t.get('biotype') == 'protein_coding' and 
+            'missense_variant' in t.get('consequence_terms', [])):
+            return t, "First protein coding with missense annotation"
     
-    # 4. Check any other frequency fields in the root
-    for key, value in myvariant_data.items():
-        if 'af' in key.lower() and 'gnomad' in key.lower() and isinstance(value, (int, float)) and value > 0:
-            clean_key = key.replace('gnomad_', '').replace('_af', '').replace('_', ' ').title()
-            freq_data.append({'Population': clean_key, 'Frequency': value})
+    # Priority 4: Any protein coding transcript
+    for t in transcripts:
+        if t.get('biotype') == 'protein_coding':
+            return t, "First protein coding"
     
-    if freq_data:
-        # Sort by frequency for better visualization
-        freq_data.sort(key=lambda x: x['Frequency'], reverse=True)
-        df_freq = pd.DataFrame(freq_data)
-        return df_freq
-    return None
+    # Fallback: First transcript
+    return transcripts[0], "First available transcript"
 
-def display_clinical_significance(myvariant_data):
-    """Display ClinVar clinical significance information."""
-    clinvar = myvariant_data.get('clinvar', {})
-    if not clinvar:
-        return None
+def display_vep_analysis(vep_data):
+    """Display comprehensive VEP analysis."""
+    if not vep_data or not vep_data[0].get('transcript_consequences'):
+        st.warning("No VEP data available")
+        return
     
-    clinical_info = {}
+    variant_info = vep_data[0]
+    all_transcripts = variant_info.get('transcript_consequences', [])
     
-    # Extract key clinical information from different possible structures
-    clinical_significance = (clinvar.get('clinical_significance') or 
-                           clinvar.get('clnsig') or
-                           clinvar.get('clinicalsignificance'))
+    # Select primary transcript
+    primary_transcript, selection_reason = select_primary_vep_transcript(vep_data)
     
-    if clinical_significance:
-        clinical_info['Clinical Significance'] = clinical_significance
-    
-    # Review status
-    review_status = (clinvar.get('review_status') or 
-                    clinvar.get('reviewstatus') or
-                    clinvar.get('review'))
-    if review_status:
-        clinical_info['Review Status'] = review_status
-    
-    # RCV accessions - handle the array structure from your data
-    rcv_data = clinvar.get('rcv', [])
-    if rcv_data and isinstance(rcv_data, list):
-        # Extract accession numbers and clinical significance from each RCV
-        accessions = []
-        significances = []
-        conditions = []
+    if primary_transcript:
+        st.subheader(f"Primary Transcript Analysis")
         
-        for rcv in rcv_data:
-            if isinstance(rcv, dict):
-                if rcv.get('accession'):
-                    accessions.append(rcv['accession'])
-                if rcv.get('clinical_significance'):
-                    significances.append(rcv['clinical_significance'])
-                if rcv.get('conditions', {}).get('name'):
-                    conditions.append(rcv['conditions']['name'])
+        # Show selection reasoning
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.write(f"**Transcript:** {primary_transcript.get('transcript_id', 'N/A')}")
+            st.write(f"**Gene:** {primary_transcript.get('gene_symbol', 'N/A')} ({primary_transcript.get('gene_id', 'N/A')})")
+        with col2:
+            st.info(f"**Selection Criteria:** {selection_reason}")
         
-        if accessions:
-            clinical_info['RCV Accessions'] = ', '.join(accessions)
-        if significances:
-            # Get unique significances
-            unique_sigs = list(set(significances))
-            clinical_info['Clinical Significance'] = ', '.join(unique_sigs)
-        if conditions:
-            unique_conditions = list(set(conditions))
-            clinical_info['Associated Conditions'] = ', '.join(unique_conditions)
+        # Consequence and impact
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            consequences = primary_transcript.get('consequence_terms', [])
+            st.write(f"**Consequence:** {', '.join(consequences)}")
+        with col2:
+            st.write(f"**Impact:** {primary_transcript.get('impact', 'N/A')}")
+        with col3:
+            st.write(f"**Biotype:** {primary_transcript.get('biotype', 'N/A')}")
+        
+        # Sequence details
+        if primary_transcript.get('amino_acids'):
+            st.subheader("Sequence Changes")
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.write(f"**Amino Acid Change:** {primary_transcript.get('amino_acids', 'N/A')}")
+                st.write(f"**Position:** {primary_transcript.get('protein_start', 'N/A')}")
+            with col2:
+                st.write(f"**Codon Change:** {primary_transcript.get('codons', 'N/A')}")
+                st.write(f"**CDS Position:** {primary_transcript.get('cds_start', 'N/A')}")
+            with col3:
+                st.write(f"**cDNA Position:** {primary_transcript.get('cdna_start', 'N/A')}")
+        
+        # Prediction scores
+        if primary_transcript.get('sift_score') or primary_transcript.get('polyphen_score'):
+            st.subheader("Functional Predictions")
+            col1, col2 = st.columns(2)
+            with col1:
+                if primary_transcript.get('sift_score'):
+                    st.metric("SIFT Score", f"{primary_transcript['sift_score']:.3f}")
+                    st.write(f"**SIFT Prediction:** {primary_transcript.get('sift_prediction', 'N/A')}")
+            with col2:
+                if primary_transcript.get('polyphen_score'):
+                    st.metric("PolyPhen Score", f"{primary_transcript['polyphen_score']:.3f}")
+                    st.write(f"**PolyPhen Prediction:** {primary_transcript.get('polyphen_prediction', 'N/A')}")
     
-    # Variation ID and Allele ID
-    if clinvar.get('variation_id'):
-        clinical_info['Variation ID'] = clinvar['variation_id']
-    if clinvar.get('allele_id'):
-        clinical_info['Allele ID'] = clinvar['allele_id']
+    # All transcripts viewer
+    with st.expander(f"View All {len(all_transcripts)} Transcripts", expanded=False):
+        for i, transcript in enumerate(all_transcripts, 1):
+            with st.container():
+                st.markdown(f"### Transcript {i}: {transcript.get('transcript_id', 'N/A')}")
+                
+                # Transcript flags and characteristics
+                flags = transcript.get('flags', [])
+                special_flags = []
+                if transcript.get('canonical') == 1:
+                    special_flags.append("CANONICAL")
+                if 'MANE_SELECT' in flags:
+                    special_flags.append("MANE SELECT")
+                
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.write(f"**Gene:** {transcript.get('gene_symbol', 'N/A')}")
+                    if special_flags:
+                        st.success(f"🏷️ {', '.join(special_flags)}")
+                with col2:
+                    st.write(f"**Consequence:** {', '.join(transcript.get('consequence_terms', []))}")
+                    st.write(f"**Impact:** {transcript.get('impact', 'N/A')}")
+                with col3:
+                    st.write(f"**Biotype:** {transcript.get('biotype', 'N/A')}")
+                    if transcript.get('distance'):
+                        st.write(f"**Distance:** {transcript.get('distance', 'N/A')}")
+                with col4:
+                    if transcript.get('amino_acids'):
+                        st.write(f"**AA Change:** {transcript.get('amino_acids', 'N/A')}")
+                        st.write(f"**Position:** {transcript.get('protein_start', 'N/A')}")
+                
+                # Predictions for protein-coding transcripts
+                if transcript.get('sift_score') or transcript.get('polyphen_score'):
+                    pred_col1, pred_col2 = st.columns(2)
+                    with pred_col1:
+                        if transcript.get('sift_score'):
+                            st.write(f"**SIFT:** {transcript['sift_score']:.3f} ({transcript.get('sift_prediction', 'N/A')})")
+                    with pred_col2:
+                        if transcript.get('polyphen_score'):
+                            st.write(f"**PolyPhen:** {transcript['polyphen_score']:.3f} ({transcript.get('polyphen_prediction', 'N/A')})")
+                
+                st.markdown("---")
+
+def display_comprehensive_myvariant_data(myvariant_data):
+    """Display comprehensive MyVariant.info data analysis."""
+    if not myvariant_data:
+        st.warning("No MyVariant data available")
+        return
     
-    # Gene information
-    gene_info = clinvar.get('gene', {})
-    if isinstance(gene_info, dict):
-        if gene_info.get('symbol'):
-            clinical_info['Gene Symbol'] = gene_info['symbol']
-        if gene_info.get('id'):
-            clinical_info['Gene ID'] = gene_info['id']
+    # Create sub-tabs for different data categories
+    data_tabs = st.tabs(["🧬 Basic Info", "🔬 Functional Predictions", "📊 Population Frequencies", "🏥 ClinVar", "🔗 External DBs"])
     
-    # HGVS notations
-    hgvs_info = clinvar.get('hgvs', {})
-    if isinstance(hgvs_info, dict):
-        if hgvs_info.get('coding'):
-            clinical_info['HGVS Coding'] = hgvs_info['coding']
-        if hgvs_info.get('protein'):
-            clinical_info['HGVS Protein'] = hgvs_info['protein']
-        if hgvs_info.get('genomic'):
-            genomic = hgvs_info['genomic']
-            if isinstance(genomic, list):
-                clinical_info['HGVS Genomic'] = ', '.join(genomic)
+    with data_tabs[0]:  # Basic Info
+        st.subheader("Variant Information")
+        
+        # Basic variant details
+        col1, col2, col3 = st.columns(3)
+        
+        # Extract chromosome info safely
+        chrom = (myvariant_data.get('hg38', {}).get('chr') or 
+                myvariant_data.get('chrom') or 'N/A')
+        
+        # Extract position info
+        hg38_data = myvariant_data.get('hg38', {})
+        pos = (hg38_data.get('start') or hg38_data.get('end') or hg38_data.get('pos') or
+              myvariant_data.get('pos') or myvariant_data.get('vcf', {}).get('position') or 'N/A')
+        
+        # Extract ref/alt
+        ref = (myvariant_data.get('hg38', {}).get('ref') or 
+              myvariant_data.get('ref') or 
+              myvariant_data.get('vcf', {}).get('ref') or 'N/A')
+        alt = (myvariant_data.get('hg38', {}).get('alt') or 
+              myvariant_data.get('alt') or 
+              myvariant_data.get('vcv', {}).get('alt') or 'N/A')
+        
+        with col1:
+            st.write(f"**Chromosome:** {chrom}")
+            st.write(f"**Position (hg38):** {pos}")
+        with col2:
+            st.write(f"**Reference:** {ref}")
+            st.write(f"**Alternate:** {alt}")
+        with col3:
+            # Gene info
+            gene_name = (myvariant_data.get('genename') or 
+                       myvariant_data.get('gene') or 
+                       myvariant_data.get('symbol') or 'N/A')
+            st.write(f"**Gene:** {gene_name}")
+            
+            # RSID
+            rsid = myvariant_data.get('rsid') or myvariant_data.get('dbsnp', {}).get('rsid') or 'N/A'
+            st.write(f"**RSID:** {rsid}")
+        
+        # ClinGen information
+        if myvariant_data.get('clingen'):
+            st.subheader("ClinGen Information")
+            clingen = myvariant_data['clingen']
+            st.write(f"**CAID:** {clingen.get('caid', 'N/A')}")
+    
+    with data_tabs[1]:  # Functional Predictions
+        st.subheader("Functional Prediction Scores")
+        
+        dbnsfp = myvariant_data.get('dbnsfp', {})
+        if not dbnsfp:
+            st.info("No dbNSFP functional prediction data available")
+            return
+        
+        def safe_extract_value(data, key):
+            """Safely extract a value, handling lists by taking the first element."""
+            if key not in data:
+                return None
+            value = data[key]
+            if isinstance(value, list):
+                return value[0] if value else None
+            return value
+        
+        # Organize predictions by category
+        prediction_categories = {
+            "Pathogenicity Predictors": {
+                "SIFT": ("sift_score", "sift_pred"),
+                "PolyPhen2 HDiv": ("polyphen2_hdiv_score", "polyphen2_hdiv_pred"),
+                "PolyPhen2 HVar": ("polyphen2_hvar_score", "polyphen2_hvar_pred"),
+                "FATHMM": ("fathmm_score", "fathmm_pred"),
+                "MutationTaster": ("mutationtaster_score", "mutationtaster_pred"),
+                "MutationAssessor": ("mutationassessor_score", "mutationassessor_pred"),
+                "PROVEAN": ("provean_score", "provean_pred"),
+                "MetaSVM": ("metasvm_score", "metasvm_pred"),
+                "MetaLR": ("metalr_score", "metalr_pred"),
+                "M-CAP": ("m_cap_score", "m_cap_pred"),
+                "REVEL": ("revel_score", None),
+                "MutPred": ("mutpred_score", None),
+            },
+            "Conservation Scores": {
+                "GERP++": ("gerp_nr", "gerp_rs"),
+                "PhyloP 100way": ("phylop100way_vertebrate", None),
+                "PhyloP 470way": ("phylop470way_mammalian", None),
+                "PhastCons 100way": ("phastcons100way_vertebrate", None),
+                "PhastCons 470way": ("phastcons470way_mammalian", None),
+                "SiPhy": ("siphy_29way_logodds", None),
+            },
+            "Ensemble Predictors": {
+                "CADD": ("cadd_phred", None),
+                "DANN": ("dann_score", None),
+                "Eigen": ("eigen_pc_phred", None),
+                "FATHMM-MKL": ("fathmm_mkl_coding_score", "fathmm_mkl_coding_pred"),
+                "FATHMM-XF": ("fathmm_xf_coding_score", "fathmm_xf_coding_pred"),
+                "GenoCanyon": ("genocanyon_score", None),
+                "Integrated FitCons": ("integrated_fitcons_score", None),
+            },
+            "Deep Learning": {
+                "PrimateAI": ("primateai_score", "primateai_pred"),
+                "DEOGEN2": ("deogen2_score", "deogen2_pred"),
+                "BayesDel": ("bayesdel_addaf_score", "bayesdel_addaf_pred"),
+                "ClinPred": ("clinpred_score", "clinpred_pred"),
+                "LIST-S2": ("list_s2_score", "list_s2_pred"),
+            }
+        }
+        
+        for category, predictors in prediction_categories.items():
+            st.markdown(f"#### {category}")
+            
+            # Create a grid layout for predictors
+            predictor_data = []
+            
+            for predictor_name, (score_key, pred_key) in predictors.items():
+                score_val = safe_extract_value(dbnsfp, score_key)
+                pred_val = safe_extract_value(dbnsfp, pred_key) if pred_key else None
+                
+                if score_val is not None:
+                    predictor_data.append({
+                        'Predictor': predictor_name,
+                        'Score': score_val,
+                        'Prediction': pred_val or 'N/A'
+                    })
+            
+            if predictor_data:
+                # Display in columns for better layout
+                cols = st.columns(3)
+                for i, pred in enumerate(predictor_data):
+                    col_idx = i % 3
+                    with cols[col_idx]:
+                        if isinstance(pred['Score'], (int, float)):
+                            score_str = f"{pred['Score']:.3f}" if isinstance(pred['Score'], float) else str(pred['Score'])
+                        else:
+                            score_str = str(pred['Score'])
+                        
+                        st.metric(
+                            pred['Predictor'],
+                            score_str,
+                            delta=pred['Prediction'] if pred['Prediction'] != 'N/A' else None
+                        )
             else:
-                clinical_info['HGVS Genomic'] = str(genomic)
+                st.info(f"No {category.lower()} data available")
     
-    return clinical_info if clinical_info else None
+    with data_tabs[2]:  # Population Frequencies
+        st.subheader("Population Frequency Data")
+        
+        # Create frequency sub-tabs
+        freq_tabs = st.tabs(["gnomAD Exome", "gnomAD Genome", "1000 Genomes", "ExAC", "Raw Data"])
+        
+        with freq_tabs[0]:  # gnomAD Exome
+            gnomad_exome = myvariant_data.get('gnomad_exome', {})
+            if gnomad_exome:
+                st.markdown("**gnomAD Exome v2.1.1**")
+                
+                # Overall frequency
+                af_data = gnomad_exome.get('af', {})
+                an_data = gnomad_exome.get('an', {})
+                ac_data = gnomad_exome.get('ac', {})
+                
+                if isinstance(af_data, dict):
+                    # Population-specific frequencies
+                    pop_data = []
+                    populations = {
+                        'af': 'Overall', 'af_afr': 'African', 'af_amr': 'Latino', 
+                        'af_asj': 'Ashkenazi Jewish', 'af_eas': 'East Asian',
+                        'af_fin': 'Finnish', 'af_nfe': 'Non-Finnish European',
+                        'af_sas': 'South Asian', 'af_oth': 'Other'
+                    }
+                    
+                    for pop_key, pop_name in populations.items():
+                        freq = af_data.get(pop_key)
+                        an = an_data.get(pop_key.replace('af', 'an'))
+                        ac = ac_data.get(pop_key.replace('af', 'ac'))
+                        
+                        if freq is not None and freq > 0:
+                            pop_data.append({
+                                'Population': pop_name,
+                                'Frequency': freq,
+                                'Allele Count': ac or 'N/A',
+                                'Total Alleles': an or 'N/A'
+                            })
+                    
+                    if pop_data:
+                        df_freq = pd.DataFrame(pop_data)
+                        st.dataframe(df_freq, use_container_width=True)
+                        
+                        # Frequency chart
+                        chart_data = df_freq[df_freq['Frequency'] > 0].set_index('Population')['Frequency']
+                        if not chart_data.empty:
+                            st.bar_chart(chart_data)
+                    else:
+                        st.info("No gnomAD exome frequency data above threshold")
+                else:
+                    st.info("gnomAD exome data format not recognized")
+            else:
+                st.info("No gnomAD exome data available")
+        
+        with freq_tabs[1]:  # gnomAD Genome
+            gnomad_genome = myvariant_data.get('gnomad_genome', {})
+            if gnomad_genome:
+                st.markdown("**gnomAD Genome v3.1.2**")
+                
+                af_data = gnomad_genome.get('af', {})
+                an_data = gnomad_genome.get('an', {})
+                ac_data = gnomad_genome.get('ac', {})
+                
+                if isinstance(af_data, dict):
+                    pop_data = []
+                    populations = {
+                        'af': 'Overall', 'af_afr': 'African', 'af_amr': 'Latino',
+                        'af_ami': 'Amish', 'af_asj': 'Ashkenazi Jewish', 
+                        'af_eas': 'East Asian', 'af_fin': 'Finnish', 
+                        'af_mid': 'Middle Eastern', 'af_nfe': 'Non-Finnish European',
+                        'af_sas': 'South Asian', 'af_oth': 'Other'
+                    }
+                    
+                    for pop_key, pop_name in populations.items():
+                        freq = af_data.get(pop_key)
+                        an = an_data.get(pop_key.replace('af', 'an'))
+                        ac = ac_data.get(pop_key.replace('af', 'ac'))
+                        
+                        if freq is not None and freq > 0:
+                            pop_data.append({
+                                'Population': pop_name,
+                                'Frequency': freq,
+                                'Allele Count': ac or 'N/A',
+                                'Total Alleles': an or 'N/A'
+                            })
+                    
+                    if pop_data:
+                        df_freq = pd.DataFrame(pop_data)
+                        st.dataframe(df_freq, use_container_width=True)
+                        
+                        # Frequency chart
+                        chart_data = df_freq[df_freq['Frequency'] > 0].set_index('Population')['Frequency']
+                        if not chart_data.empty:
+                            st.bar_chart(chart_data)
+                    else:
+                        st.info("No gnomAD genome frequency data above threshold")
+        
+        with freq_tabs[2]:  # 1000 Genomes
+            kg_data = myvariant_data.get('dbnsfp', {}).get('1000gp3', {})
+            if kg_data:
+                st.markdown("**1000 Genomes Project Phase 3**")
+                
+                # Overall frequency
+                overall_freq = kg_data.get('af')
+                overall_ac = kg_data.get('ac')
+                
+                if overall_freq and overall_freq > 0:
+                    st.write(f"**Overall Frequency:** {overall_freq:.6f}")
+                    st.write(f"**Overall Allele Count:** {overall_ac}")
+                    
+                    # Population frequencies
+                    pop_data = []
+                    populations = {
+                        'afr': 'African', 'amr': 'American', 'eas': 'East Asian',
+                        'eur': 'European', 'sas': 'South Asian'
+                    }
+                    
+                    for pop_key, pop_name in populations.items():
+                        pop_info = kg_data.get(pop_key, {})
+                        if isinstance(pop_info, dict):
+                            freq = pop_info.get('af')
+                            ac = pop_info.get('ac')
+                            if freq and freq > 0:
+                                pop_data.append({
+                                    'Population': pop_name,
+                                    'Frequency': freq,
+                                    'Allele Count': ac
+                                })
+                    
+                    if pop_data:
+                        df_pop = pd.DataFrame(pop_data)
+                        st.dataframe(df_pop, use_container_width=True)
+            else:
+                st.info("No 1000 Genomes data available")
+        
+        with freq_tabs[3]:  # ExAC
+            exac_data = myvariant_data.get('dbnsfp', {}).get('exac', {})
+            if exac_data:
+                st.markdown("**Exome Aggregation Consortium (ExAC)**")
+                
+                overall_freq = exac_data.get('af')
+                overall_ac = exac_data.get('ac')
+                
+                if overall_freq and overall_freq > 0:
+                    st.write(f"**Overall Frequency:** {overall_freq:.6f}")
+                    st.write(f"**Overall AC:** {overall_ac}")
+                    
+                    # Population frequencies
+                    populations = {
+                        'afr': 'African', 'amr': 'Latino', 'eas': 'East Asian',
+                        'fin': 'Finnish', 'nfe': 'Non-Finnish European', 'sas': 'South Asian'
+                    }
+                    
+                    pop_data = []
+                    for pop_key, pop_name in populations.items():
+                        pop_freq = exac_data.get(pop_key)
+                        if isinstance(pop_freq, dict):
+                            freq = pop_freq.get('af')
+                        else:
+                            freq = pop_freq
+                        
+                        if freq and freq > 0:
+                            pop_data.append({
+                                'Population': pop_name,
+                                'Frequency': freq
+                            })
+                    
+                    if pop_data:
+                        df_pop = pd.DataFrame(pop_data)
+                        st.dataframe(df_pop, use_container_width=True)
+        
+        with freq_tabs[4]:  # Raw frequency data
+            st.markdown("**All Available Frequency Fields**")
+            
+            # Collect all frequency-related fields
+            freq_fields = {}
+            
+            def collect_freq_fields(data, prefix=""):
+                for key, value in data.items():
+                    full_key = f"{prefix}.{key}" if prefix else key
+                    if 'af' in key.lower() or 'freq' in key.lower():
+                        if isinstance(value, (int, float)) and value > 0:
+                            freq_fields[full_key] = value
+                    elif isinstance(value, dict):
+                        collect_freq_fields(value, full_key)
+            
+            collect_freq_fields(myvariant_data)
+            
+            if freq_fields:
+                freq_df = pd.DataFrame([
+                    {'Field': k, 'Frequency': v} for k, v in sorted(freq_fields.items())
+                ])
+                st.dataframe(freq_df, use_container_width=True)
+            else:
+                st.info("No frequency fields found")
+    
+    with data_tabs[3]:  # ClinVar
+        st.subheader("ClinVar Clinical Annotations")
+        
+        clinvar_data = myvariant_data.get('clinvar', {})
+        if not clinvar_data:
+            st.info("No ClinVar data available")
+            return
+        
+        # Main clinical significance
+        clinical_sig = (clinvar_data.get('clinical_significance') or 
+                       clinvar_data.get('clnsig') or 'N/A')
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write(f"**Clinical Significance:** {clinical_sig}")
+            
+            # Variation and Allele IDs
+            if clinvar_data.get('variant_id'):
+                st.write(f"**Variation ID:** {clinvar_data['variant_id']}")
+            if clinvar_data.get('allele_id'):
+                st.write(f"**Allele ID:** {clinvar_data['allele_id']}")
+        
+        with col2:
+            # Gene information
+            gene_info = clinvar_data.get('gene', {})
+            if isinstance(gene_info, dict):
+                if gene_info.get('symbol'):
+                    st.write(f"**Gene Symbol:** {gene_info['symbol']}")
+                if gene_info.get('id'):
+                    st.write(f"**Gene ID:** {gene_info['id']}")
+        
+        # HGVS notations
+        hgvs_info = clinvar_data.get('hgvs', {})
+        if isinstance(hgvs_info, dict):
+            st.subheader("HGVS Notations")
+            col1, col2 = st.columns(2)
+            with col1:
+                if hgvs_info.get('coding'):
+                    st.write(f"**Coding:** {hgvs_info['coding']}")
+                if hgvs_info.get('protein'):
+                    st.write(f"**Protein:** {hgvs_info['protein']}")
+            with col2:
+                if hgvs_info.get('genomic'):
+                    genomic = hgvs_info['genomic']
+                    if isinstance(genomic, list):
+                        st.write(f"**Genomic:** {', '.join(genomic)}")
+                    else:
+                        st.write(f"**Genomic:** {str(genomic)}")
+        
+        # RCV records
+        rcv_data = clinvar_data.get('rcv', [])
+        if rcv_data and isinstance(rcv_data, list):
+            st.subheader(f"ClinVar Records ({len(rcv_data)} records)")
+            
+            for i, rcv in enumerate(rcv_data, 1):
+                if isinstance(rcv, dict):
+                    with st.expander(f"Record {i}: {rcv.get('accession', 'N/A')}"):
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.write(f"**Accession:** {rcv.get('accession', 'N/A')}")
+                            st.write(f"**Clinical Significance:** {rcv.get('clinical_significance', 'N/A')}")
+                            st.write(f"**Review Status:** {rcv.get('review_status', 'N/A')}")
+                            st.write(f"**Origin:** {rcv.get('origin', 'N/A')}")
+                        
+                        with col2:
+                            st.write(f"**Last Evaluated:** {rcv.get('last_evaluated', 'N/A')}")
+                            st.write(f"**Number of Submitters:** {rcv.get('number_submitters', 'N/A')}")
+                            
+                            # Associated conditions
+                            conditions = rcv.get('conditions', {})
+                            if isinstance(conditions, dict) and conditions.get('name'):
+                                st.write(f"**Condition:** {conditions['name']}")
+                                
+                                # Condition identifiers
+                                identifiers = conditions.get('identifiers', {})
+                                if identifiers:
+                                    id_list = []
+                                    for db, id_val in identifiers.items():
+                                        id_list.append(f"{db}: {id_val}")
+                                    st.write(f"**Identifiers:** {', '.join(id_list)}")
+    
+    with data_tabs[4]:  # External DBs
+        st.subheader("External Database References")
+        
+        # dbSNP
+        dbsnp_data = myvariant_data.get('dbsnp', {})
+        if dbsnp_data:
+            st.markdown("#### dbSNP")
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"**RSID:** {dbsnp_data.get('rsid', 'N/A')}")
+                st.write(f"**Build:** {dbsnp_data.get('dbsnp_build', 'N/A')}")
+                st.write(f"**Variant Type:** {dbsnp_data.get('vartype', 'N/A')}")
+            
+            # Gene information from dbSNP
+            genes = dbsnp_data.get('gene', [])
+            if genes:
+                with col2:
+                    st.write(f"**Associated Genes:** {len(genes)} genes")
+                    for gene in genes[:3]:  # Show first 3 genes
+                        st.write(f"- {gene.get('symbol', 'N/A')} (ID: {gene.get('geneid', 'N/A')})")
+        
+        # UniProt
+        uniprot_data = myvariant_data.get('uniprot', {})
+        if uniprot_data:
+            st.markdown("#### UniProt")
+            if uniprot_data.get('clinical_significance'):
+                st.write(f"**Clinical Significance:** {uniprot_data['clinical_significance']}")
+            if uniprot_data.get('source_db_id'):
+                st.write(f"**Source DB ID:** {uniprot_data['source_db_id']}")
 
-def display_prediction_scores(myvariant_data):
-    """Display functional prediction scores."""
-    dbnsfp = myvariant_data.get('dbnsfp', {})
-    if not dbnsfp:
-        return None
+def create_download_section(clingen_data, myvariant_data, vep_data, classification):
+    """Create download section with proper state management."""
+    st.subheader("📥 Download Data")
     
-    predictions = {}
+    # Use session state to prevent rerun on download
+    if 'download_clicked' not in st.session_state:
+        st.session_state.download_clicked = False
     
-    def safe_extract_value(data, key):
-        """Safely extract a value, handling lists by taking the first element."""
-        if key not in data:
-            return None
-        value = data[key]
-        if isinstance(value, list):
-            return value[0] if value else None
-        return value
+    col1, col2, col3 = st.columns(3)
     
-    # SIFT
-    if 'sift' in dbnsfp:
-        sift_data = dbnsfp['sift']
-        if isinstance(sift_data, dict):
-            score = safe_extract_value(sift_data, 'score')
-            pred = safe_extract_value(sift_data, 'pred')
-            if score is not None:
-                predictions['SIFT Score'] = score
-            if pred is not None:
-                predictions['SIFT Prediction'] = pred
+    with col1:
+        if clingen_data:
+            clingen_json = json.dumps(clingen_data, indent=2)
+            st.download_button(
+                label="📋 Download ClinGen Data",
+                data=clingen_json,
+                file_name=f"clingen_{classification.extracted_identifier}.json",
+                mime="application/json",
+                key="clingen_download",
+                help="Download ClinGen Allele Registry data"
+            )
     
-    # Handle direct dbnsfp fields (like in your error)
-    score = safe_extract_value(dbnsfp, 'sift_score')
-    pred = safe_extract_value(dbnsfp, 'sift_pred')
-    if score is not None:
-        predictions['SIFT Score'] = score
-    if pred is not None:
-        predictions['SIFT Prediction'] = pred
+    with col2:
+        if myvariant_data:
+            myvariant_json = json.dumps(myvariant_data, indent=2)
+            st.download_button(
+                label="🔬 Download MyVariant Data",
+                data=myvariant_json,
+                file_name=f"myvariant_{classification.extracted_identifier}.json",
+                mime="application/json",
+                key="myvariant_download",
+                help="Download MyVariant.info annotations"
+            )
     
-    # PolyPhen
-    if 'polyphen2' in dbnsfp:
-        pp2_data = dbnsfp['polyphen2']
-        if isinstance(pp2_data, dict):
-            if 'hdiv' in pp2_data and isinstance(pp2_data['hdiv'], dict):
-                score = safe_extract_value(pp2_data['hdiv'], 'score')
-                pred = safe_extract_value(pp2_data['hdiv'], 'pred')
-                if score is not None:
-                    predictions['PolyPhen2 HDiv Score'] = score
-                if pred is not None:
-                    predictions['PolyPhen2 HDiv Prediction'] = pred
-    
-    # Handle direct polyphen fields
-    pp_score = safe_extract_value(dbnsfp, 'polyphen2_hdiv_score')
-    pp_pred = safe_extract_value(dbnsfp, 'polyphen2_hdiv_pred')
-    if pp_score is not None:
-        predictions['PolyPhen2 Score'] = pp_score
-    if pp_pred is not None:
-        predictions['PolyPhen2 Prediction'] = pp_pred
-    
-    # CADD
-    if 'cadd' in dbnsfp:
-        cadd_data = dbnsfp['cadd']
-        if isinstance(cadd_data, dict):
-            score = safe_extract_value(cadd_data, 'phred')
-            if score is not None:
-                predictions['CADD Phred Score'] = score
-    
-    # Handle direct CADD field
-    cadd_score = safe_extract_value(dbnsfp, 'cadd_phred')
-    if cadd_score is not None:
-        predictions['CADD Phred Score'] = cadd_score
-    
-    return predictions if predictions else None
+    with col3:
+        if vep_data:
+            vep_json = json.dumps(vep_data, indent=2)
+            st.download_button(
+                label="🧬 Download VEP Data",
+                data=vep_json,
+                file_name=f"vep_{classification.extracted_identifier}.json",
+                mime="application/json",
+                key="vep_download",
+                help="Download Ensembl VEP predictions"
+            )
 
 def main():
     # Header
@@ -444,9 +877,9 @@ def main():
         st.code("RSID: rs369602258")
         
         st.markdown("### Example Variants")
-        if st.button("Load Example 1: NDUFS8"):
+        if st.button("Load Example 1: NDUFS8", key="example1"):
             st.session_state.example_input = "NM_002496.3:c.64C>T"
-        if st.button("Load Example 2: BRCA1"):
+        if st.button("Load Example 2: BRCA1", key="example2"):
             st.session_state.example_input = "NM_007294.3:c.5266dupC"
     
     # Main input
@@ -457,209 +890,262 @@ def main():
     user_input = st.text_input(
         "Enter a genetic variant (HGVS notation or RSID):",
         value=default_value,
-        placeholder="e.g., NM_002496.3:c.64C>T or rs369602258"
+        placeholder="e.g., NM_002496.3:c.64C>T or rs369602258",
+        key="variant_input"
     )
     
     # Clear the example input after it's been used
     if hasattr(st.session_state, 'example_input'):
         delattr(st.session_state, 'example_input')
     
-    analyze_button = st.button("🔬 Analyze Variant", type="primary")
+    analyze_button = st.button("🔬 Analyze Variant", type="primary", key="analyze_btn")
     
     if analyze_button and user_input:
-        # Initialize router
-        router = GenomicQueryRouter()
-        classification = router.classify_query(user_input)
+        # Store the analysis in session state to prevent rerun issues
+        if 'analysis_data' not in st.session_state or st.session_state.get('last_query') != user_input:
+            with st.spinner("Analyzing variant..."):
+                # Initialize router
+                router = GenomicQueryRouter()
+                classification = router.classify_query(user_input)
+                
+                if not classification.is_genomic:
+                    st.error("Invalid input format. Please provide a valid HGVS notation or RSID.")
+                    st.stop()
+                
+                try:
+                    start_time = time.time()
+                    
+                    # Query APIs
+                    clingen_raw = query_clingen_allele(classification.extracted_identifier)
+                    clingen_data = parse_caid_minimal(clingen_raw)
+                    annotations = get_variant_annotations(clingen_data)
+                    processing_time = time.time() - start_time
+                    
+                    # Store in session state
+                    st.session_state.analysis_data = {
+                        'classification': classification,
+                        'clingen_data': clingen_data,
+                        'annotations': annotations,
+                        'processing_time': processing_time
+                    }
+                    st.session_state.last_query = user_input
+                    
+                except Exception as e:
+                    st.error(f"Analysis failed: {str(e)}")
+                    st.exception(e)
+                    st.stop()
         
-        if not classification.is_genomic:
-            st.error("Invalid input format. Please provide a valid HGVS notation or RSID.")
-            st.stop()
+        # Retrieve analysis data from session state
+        analysis_data = st.session_state.analysis_data
+        classification = analysis_data['classification']
+        clingen_data = analysis_data['clingen_data']
+        annotations = analysis_data['annotations']
+        processing_time = analysis_data['processing_time']
         
         # Display classification info
         st.markdown('<div class="info-box">', unsafe_allow_html=True)
-        st.write(f"**Detected identifier:** {classification.extracted_identifier}")
-        st.write(f"**Type:** {classification.query_type}")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write(f"**Detected identifier:** {classification.extracted_identifier}")
+        with col2:
+            st.write(f"**Type:** {classification.query_type}")
         st.markdown('</div>', unsafe_allow_html=True)
         
-        try:
-            start_time = time.time()
+        # Display ClinGen results
+        st.markdown('<div class="section-header">ClinGen Allele Registry</div>', unsafe_allow_html=True)
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write(f"**CAid:** {clingen_data.get('CAid', 'N/A')}")
+            st.write(f"**RSID:** {clingen_data.get('rsid', 'N/A')}")
+        with col2:
+            # Show full MANE and MyVariant IDs without truncation
+            mane_ensembl = clingen_data.get('mane_ensembl', 'N/A')
+            myvariant_id = clingen_data.get('myvariant_hg38', 'N/A')
             
-            # Step 1: Query ClinGen
-            st.markdown('<div class="section-header">Step 1: ClinGen Allele Registry</div>', unsafe_allow_html=True)
-            clingen_raw = query_clingen_allele(classification.extracted_identifier)
-            clingen_data = parse_caid_minimal(clingen_raw)
+            st.write(f"**MANE Ensembl:** {mane_ensembl}")
+            st.write(f"**MyVariant ID:** {myvariant_id}")
+        
+        # Display any API errors
+        if annotations['errors']:
+            for error in annotations['errors']:
+                st.warning(f"⚠️ {error}")
+        
+        # Main analysis tabs
+        if annotations['myvariant_data'] or annotations['vep_data']:
+            st.markdown('<div class="section-header">Analysis Results</div>', unsafe_allow_html=True)
             
-            # Display ClinGen results
+            tab1, tab2, tab3, tab4 = st.tabs(["🧬 VEP Analysis", "🔬 MyVariant Analysis", "🏥 Clinical Data", "📋 Raw Data"])
+            
+            with tab1:  # VEP Analysis
+                if annotations['vep_data']:
+                    display_vep_analysis(annotations['vep_data'])
+                else:
+                    st.info("No VEP data available. This may be due to API limitations or the variant not being found in Ensembl.")
+            
+            with tab2:  # MyVariant Analysis
+                if annotations['myvariant_data']:
+                    display_comprehensive_myvariant_data(annotations['myvariant_data'])
+                else:
+                    st.info("No MyVariant data available")
+            
+            with tab3:  # Clinical Data
+                if annotations['myvariant_data']:
+                    myvariant_data = annotations['myvariant_data']
+                    
+                    # Clinical significance from ClinVar
+                    clinvar_data = myvariant_data.get('clinvar', {})
+                    if clinvar_data:
+                        st.subheader("ClinVar Clinical Significance")
+                        
+                        # Main clinical significance
+                        clinical_sig = (clinvar_data.get('clinical_significance') or 
+                                       clinvar_data.get('clnsig') or 'N/A')
+                        
+                        # Create summary metrics
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("Clinical Significance", clinical_sig)
+                        with col2:
+                            if clinvar_data.get('variant_id'):
+                                st.metric("ClinVar ID", clinvar_data['variant_id'])
+                        with col3:
+                            if clinvar_data.get('allele_id'):
+                                st.metric("Allele ID", clinvar_data['allele_id'])
+                        
+                        # Review status and submission details
+                        rcv_data = clinvar_data.get('rcv', [])
+                        if rcv_data and isinstance(rcv_data, list):
+                            st.subheader("Submission Details")
+                            for rcv in rcv_data:
+                                if isinstance(rcv, dict):
+                                    with st.expander(f"ClinVar Record: {rcv.get('accession', 'N/A')}"):
+                                        col1, col2 = st.columns(2)
+                                        with col1:
+                                            st.write(f"**Review Status:** {rcv.get('review_status', 'N/A')}")
+                                            st.write(f"**Last Evaluated:** {rcv.get('last_evaluated', 'N/A')}")
+                                            st.write(f"**Number of Submitters:** {rcv.get('number_submitters', 'N/A')}")
+                                        with col2:
+                                            st.write(f"**Origin:** {rcv.get('origin', 'N/A')}")
+                                            conditions = rcv.get('conditions', {})
+                                            if isinstance(conditions, dict) and conditions.get('name'):
+                                                st.write(f"**Associated Condition:** {conditions['name']}")
+                    
+                    # UniProt clinical data
+                    uniprot_data = myvariant_data.get('uniprot', {})
+                    if uniprot_data and uniprot_data.get('clinical_significance'):
+                        st.subheader("UniProt Clinical Annotation")
+                        st.write(f"**Clinical Significance:** {uniprot_data['clinical_significance']}")
+                        if uniprot_data.get('source_db_id'):
+                            st.write(f"**Source:** {uniprot_data['source_db_id']}")
+                    
+                    # Population frequency summary for clinical context
+                    st.subheader("Population Frequency Context")
+                    
+                    # Get highest population frequency for clinical interpretation
+                    max_freq = 0
+                    freq_source = "N/A"
+                    
+                    # Check gnomAD data
+                    gnomad_exome = myvariant_data.get('gnomad_exome', {})
+                    if gnomad_exome and gnomad_exome.get('af', {}).get('af'):
+                        exome_freq = gnomad_exome['af']['af']
+                        if exome_freq > max_freq:
+                            max_freq = exome_freq
+                            freq_source = "gnomAD Exome"
+                    
+                    gnomad_genome = myvariant_data.get('gnomad_genome', {})
+                    if gnomad_genome and gnomad_genome.get('af', {}).get('af'):
+                        genome_freq = gnomad_genome['af']['af']
+                        if genome_freq > max_freq:
+                            max_freq = genome_freq
+                            freq_source = "gnomAD Genome"
+                    
+                    if max_freq > 0:
+                        st.metric(f"Max Population Frequency ({freq_source})", f"{max_freq:.6f}")
+                        
+                        # Frequency interpretation
+                        if max_freq >= 0.01:
+                            st.success("🟢 Common variant (≥1%)")
+                        elif max_freq >= 0.005:
+                            st.warning("🟡 Low frequency variant (0.5-1%)")
+                        elif max_freq >= 0.0001:
+                            st.info("🔵 Rare variant (0.01-0.5%)")
+                        else:
+                            st.error("🔴 Very rare variant (<0.01%)")
+                    else:
+                        st.info("No reliable population frequency data available")
+                
+                else:
+                    st.info("No clinical data available")
+            
+            with tab4:  # Raw Data
+                st.subheader("Raw API Responses")
+                
+                # ClinGen data
+                with st.expander("ClinGen Allele Registry Data", expanded=False):
+                    st.json(clingen_data)
+                
+                # MyVariant data
+                if annotations['myvariant_data']:
+                    with st.expander("MyVariant.info Data", expanded=False):
+                        st.json(annotations['myvariant_data'])
+                
+                # VEP data
+                if annotations['vep_data']:
+                    with st.expander("Ensembl VEP Data", expanded=False):
+                        st.json(annotations['vep_data'])
+                
+                # Download section - Use dedicated function to prevent rerun issues
+                st.markdown("---")
+                create_download_section(
+                    clingen_data, 
+                    annotations['myvariant_data'], 
+                    annotations['vep_data'], 
+                    classification
+                )
+        
+        # Processing time and summary
+        st.success(f"✅ Analysis completed in {processing_time:.2f} seconds")
+        
+        # Analysis summary
+        with st.expander("Analysis Summary", expanded=False):
             col1, col2 = st.columns(2)
             with col1:
-                st.metric("CAid", clingen_data.get('CAid', 'N/A'))
-                st.metric("RSID", clingen_data.get('rsid', 'N/A'))
+                st.write("**Data Sources Retrieved:**")
+                sources = ["ClinGen Allele Registry"]
+                if annotations['myvariant_data']:
+                    sources.append("MyVariant.info")
+                if annotations['vep_data']:
+                    sources.append("Ensembl VEP")
+                for source in sources:
+                    st.write(f"• {source}")
+            
             with col2:
-                st.metric("MANE Ensembl", clingen_data.get('mane_ensembl', 'N/A')[:20] + "..." if clingen_data.get('mane_ensembl') else 'N/A')
-                st.metric("MyVariant ID", clingen_data.get('myvariant_hg38', 'N/A')[:20] + "..." if clingen_data.get('myvariant_hg38') else 'N/A')
-            
-            # Step 2: Get annotations
-            st.markdown('<div class="section-header">Step 2: Variant Annotations</div>', unsafe_allow_html=True)
-            annotations = get_variant_annotations(clingen_data)
-            
-            # Display any errors
-            if annotations['errors']:
-                for error in annotations['errors']:
-                    st.warning(error)
-            
-            # Step 3: Display results
-            if annotations['myvariant_data'] or annotations['vep_data']:
-                st.markdown('<div class="section-header">Step 3: Analysis Results</div>', unsafe_allow_html=True)
-                
-                # Create tabs for different views
-                tab1, tab2, tab3, tab4 = st.tabs(["📊 Summary", "🧬 VEP Analysis", "🏥 MyVariant/ClinVar", "📋 Raw Data"])
-                
-                with tab1:
-                    # Basic variant info
-                    st.subheader("Variant Information")
-                    if annotations['myvariant_data']:
-                        myv_data = annotations['myvariant_data']
-                        
-                        # Basic info - handle nested data structure
-                        info_cols = st.columns(3)
-                        
-                        # Extract chromosome info
-                        chrom = (myv_data.get('hg38', {}).get('chr') or 
-                                myv_data.get('chr') or 
-                                myv_data.get('chrom') or 'N/A')
-                        
-                        # Extract position info from various possible locations
-                        hg38_data = myv_data.get('hg38', {})
-                        pos = (hg38_data.get('start') or hg38_data.get('end') or hg38_data.get('pos') or
-                              myv_data.get('pos') or myv_data.get('start') or 
-                              myv_data.get('vcf', {}).get('position') or 'N/A')
-                        
-                        # Extract ref/alt
-                        ref = (myv_data.get('hg38', {}).get('ref') or 
-                              myv_data.get('ref') or 
-                              myv_data.get('vcf', {}).get('ref') or 'N/A')
-                        alt = (myv_data.get('hg38', {}).get('alt') or 
-                              myv_data.get('alt') or 
-                              myv_data.get('vcf', {}).get('alt') or 'N/A')
-                        
-                        with info_cols[0]:
-                            st.metric("Chromosome", chrom)
-                        with info_cols[1]:
-                            st.metric("Position", pos)
-                        with info_cols[2]:
-                            st.metric("Change", f"{ref} → {alt}")
-                        
-                        # Gene info
-                        gene_name = (myv_data.get('genename') or 
-                                   myv_data.get('gene') or 
-                                   myv_data.get('symbol') or 'N/A')
-                        if gene_name != 'N/A':
-                            st.metric("Gene", gene_name)
-                
-                with tab2:
-                    # Clinical significance
-                    st.subheader("Clinical Significance")
-                    if annotations['myvariant_data']:
-                        clinical_info = display_clinical_significance(annotations['myvariant_data'])
-                        if clinical_info:
-                            for key, value in clinical_info.items():
-                                st.write(f"**{key}:** {value}")
-                        else:
-                            st.info("No ClinVar clinical significance data available")
-                    
-                    # Functional predictions
-                    st.subheader("Functional Predictions")
-                    if annotations['myvariant_data']:
-                        predictions = display_prediction_scores(annotations['myvariant_data'])
-                        if predictions:
-                            pred_cols = st.columns(2)
-                            col_index = 0
-                            for key, value in predictions.items():
-                                with pred_cols[col_index % 2]:
-                                    # Handle different value types safely
-                                    try:
-                                        if isinstance(value, (int, float)):
-                                            st.metric(key, f"{value:.3f}" if isinstance(value, float) else str(value))
-                                        else:
-                                            st.metric(key, str(value))
-                                    except Exception as e:
-                                        st.write(f"**{key}:** {value}")
-                                col_index += 1
-                        else:
-                            st.info("No functional prediction scores available")
-                
-                with tab3:
-                    # Population frequencies
-                    st.subheader("Population Frequencies")
-                    if annotations['myvariant_data']:
-                        freq_data = create_frequency_chart(annotations['myvariant_data'])
-                        if freq_data is not None:
-                            st.bar_chart(freq_data.set_index('Population')['Frequency'])
-                        else:
-                            st.info("No population frequency data available")
-                
-                with tab4:
-                    # Raw data
-                    st.subheader("Raw API Responses")
-                    
-                    # ClinGen data
-                    with st.expander("ClinGen Allele Registry Data"):
-                        st.json(clingen_data)
-                    
-                    # MyVariant data
-                    if annotations['myvariant_data']:
-                        with st.expander("MyVariant.info Data"):
-                            st.json(annotations['myvariant_data'])
-                    
-                    # VEP data
-                    if annotations['vep_data']:
-                        with st.expander("Ensembl VEP Data"):
-                            st.json(annotations['vep_data'])
-                    
-                    # Download buttons
-                    st.subheader("Download Data")
-                    col1, col2, col3 = st.columns(3)
-                    
-                    with col1:
-                        if st.download_button(
-                            "Download ClinGen Data",
-                            json.dumps(clingen_data, indent=2),
-                            file_name=f"clingen_{classification.extracted_identifier}.json",
-                            mime="application/json"
-                        ):
-                            st.success("ClinGen data downloaded!")
-                    
-                    with col2:
-                        if annotations['myvariant_data'] and st.download_button(
-                            "Download MyVariant Data",
-                            json.dumps(annotations['myvariant_data'], indent=2),
-                            file_name=f"myvariant_{classification.extracted_identifier}.json",
-                            mime="application/json"
-                        ):
-                            st.success("MyVariant data downloaded!")
-                    
-                    with col3:
-                        if annotations['vep_data'] and st.download_button(
-                            "Download VEP Data",
-                            json.dumps(annotations['vep_data'], indent=2),
-                            file_name=f"vep_{classification.extracted_identifier}.json",
-                            mime="application/json"
-                        ):
-                            st.success("VEP data downloaded!")
-            
-            # Processing time
-            processing_time = time.time() - start_time
-            st.success(f"Analysis completed in {processing_time:.2f} seconds")
-            
-        except Exception as e:
-            st.error(f"Analysis failed: {str(e)}")
-            st.exception(e)
+                st.write("**Key Identifiers:**")
+                if clingen_data.get('CAid'):
+                    st.write(f"• ClinGen CAID: {clingen_data['CAid']}")
+                if clingen_data.get('rsid'):
+                    st.write(f"• dbSNP RSID: rs{clingen_data['rsid']}")
+                if annotations['myvariant_data'] and annotations['myvariant_data'].get('clinvar', {}).get('variant_id'):
+                    st.write(f"• ClinVar ID: {annotations['myvariant_data']['clinvar']['variant_id']}")
+    
+    elif user_input and not analyze_button:
+        # Show input validation without analyzing
+        router = GenomicQueryRouter()
+        classification = router.classify_query(user_input)
+        
+        if classification.is_genomic:
+            st.success(f"✅ Valid {classification.query_type} format detected: {classification.extracted_identifier}")
+        else:
+            st.error("❌ Invalid format. Please provide a valid HGVS notation or RSID.")
     
     # Footer
     st.markdown("---")
     st.markdown("""
-    <div style="text-align: center; color: #666;">
-        <p>Built with Streamlit • Data from ClinGen, MyVariant.info, and Ensembl VEP</p>
+    <div style="text-align: center; color: #666; font-size: 0.9rem;">
+        <p>🧬 <strong>Genetic Variant Analyzer</strong></p>
+        <p>Data sources: ClinGen Allele Registry • MyVariant.info • Ensembl VEP</p>
+        <p>For research purposes only • Not for clinical use</p>
     </div>
     """, unsafe_allow_html=True)
 

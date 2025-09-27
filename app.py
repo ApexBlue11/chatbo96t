@@ -426,7 +426,6 @@ def display_comprehensive_myvariant_data(myvariant_data):
                 return value[0] if value else None
             return value
         
-        # Organize predictions by category with correct field paths
         def extract_nested_value(data, path_list):
             """Extract nested values from complex structures like polyphen2.hdiv.score"""
             current = data
@@ -437,6 +436,7 @@ def display_comprehensive_myvariant_data(myvariant_data):
                     return None
             return current
         
+        # Organize predictions by category with correct field paths
         prediction_categories = {
             "Pathogenicity Predictors": [
                 ("SIFT", ["sift", "score"], ["sift", "pred"]),
@@ -989,7 +989,6 @@ def main():
     
     # Display results section
     if should_show_results and 'analysis_data' in st.session_state:
-        
         # Retrieve analysis data from session state
         analysis_data = st.session_state.analysis_data
         classification = analysis_data['classification']

@@ -512,7 +512,7 @@ def main():
                 st.markdown('<div class="section-header">Step 3: Analysis Results</div>', unsafe_allow_html=True)
                 
                 # Create tabs for different views
-                tab1, tab2, tab3, tab4 = st.tabs(["📊 Summary", "🧬 Clinical", "📈 Frequencies", "📋 Raw Data"])
+                tab1, tab2, tab3, tab4 = st.tabs(["📊 Summary", "🧬 VEP Analysis", "🏥 MyVariant/ClinVar", "📋 Raw Data"])
                 
                 with tab1:
                     # Basic variant info

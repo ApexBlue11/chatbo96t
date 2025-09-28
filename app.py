@@ -181,7 +181,7 @@ def parse_caid_minimal(raw_json):
 
     return result
 
-def get_variant_annotations(clingen_data):
+def get_variant_annotations(clingen_data, classification=None):
     """Retrieve variant annotations from multiple APIs."""
     annotations = {
         'myvariant_data': {},
@@ -189,11 +189,17 @@ def get_variant_annotations(clingen_data):
         'errors': []
     }
     
-    # MyVariant.info query
+    # MyVariant.info query - can handle RSIDs directly
+    query_id = None
     if clingen_data.get('myvariant_hg38'):
+        query_id = clingen_data['myvariant_hg38']
+    elif classification and classification.query_type == 'rsid':
+        query_id = classification.extracted_identifier
+    
+    if query_id:
         try:
             with st.spinner("Fetching MyVariant.info data..."):
-                myv_url = f"https://myvariant.info/v1/variant/{clingen_data['myvariant_hg38']}?assembly=hg38"
+                myv_url = f"https://myvariant.info/v1/variant/{query_id}?assembly=hg38"
                 myv_response = requests.get(myv_url, timeout=30)
                 if myv_response.ok:
                     annotations['myvariant_data'] = myv_response.json()
@@ -202,11 +208,16 @@ def get_variant_annotations(clingen_data):
         except Exception as e:
             annotations['errors'].append(f"MyVariant query error: {str(e)}")
     
-    # Ensembl VEP query
+    # Ensembl VEP query - try multiple approaches
+    vep_input = None
     if clingen_data.get('mane_ensembl'):
+        vep_input = clingen_data['mane_ensembl']
+    elif classification and classification.query_type == 'rsid':
+        vep_input = classification.extracted_identifier
+    
+    if vep_input:
         try:
             with st.spinner("Fetching Ensembl VEP data..."):
-                vep_input = clingen_data['mane_ensembl']
                 vep_url = f"https://rest.ensembl.org/vep/human/hgvs/{vep_input}"
                 vep_headers = {"Content-Type": "application/json", "Accept": "application/json"}
                 vep_response = requests.get(vep_url, headers=vep_headers, timeout=30)
@@ -959,10 +970,51 @@ def main():
                 try:
                     start_time = time.time()
                     
-                    # Query APIs
-                    clingen_raw = query_clingen_allele(classification.extracted_identifier)
-                    clingen_data = parse_caid_minimal(clingen_raw)
-                    annotations = get_variant_annotations(clingen_data)
+                    # Handle different query types
+                    if classification.query_type == 'rsid':
+                        # For RSIDs, skip ClinGen and query MyVariant/VEP directly
+                        st.info("🔍 RSID detected - querying MyVariant.info and Ensembl VEP directly (skipping ClinGen)")
+                        clingen_data = {
+                            'CAid': 'N/A (RSID input)',
+                            'rsid': classification.extracted_identifier.replace('rs', ''),
+                            'genomic_hgvs_grch38': None,
+                            'genomic_hgvs_grch37': None,
+                            'myvariant_hg38': None,
+                            'myvariant_hg19': None,
+                            'mane_ensembl': None,
+                            'mane_refseq': None
+                        }
+                        annotations = get_variant_annotations(clingen_data, classification)
+                        
+                        # Extract additional info from MyVariant if available
+                        if annotations['myvariant_data']:
+                            myv_data = annotations['myvariant_data']
+                            clingen_info = myv_data.get('clingen', {})
+                            if clingen_info.get('caid'):
+                                clingen_data['CAid'] = clingen_info['caid']
+                            
+                            # Try to get HGVS from ClinVar data
+                            clinvar_info = myv_data.get('clinvar', {})
+                            if clinvar_info.get('hgvs'):
+                                hgvs_data = clinvar_info['hgvs']
+                                if isinstance(hgvs_data, dict):
+                                    if hgvs_data.get('coding'):
+                                        # Try VEP with coding HGVS
+                                        coding_hgvs = hgvs_data['coding']
+                                        try:
+                                            vep_url = f"https://rest.ensembl.org/vep/human/hgvs/{coding_hgvs}"
+                                            vep_headers = {"Content-Type": "application/json", "Accept": "application/json"}
+                                            vep_response = requests.get(vep_url, headers=vep_headers, timeout=30)
+                                            if vep_response.ok:
+                                                annotations['vep_data'] = vep_response.json()
+                                        except:
+                                            pass  # VEP with RSID might have worked, so don't overwrite errors
+                    else:
+                        # For HGVS notations, query ClinGen first
+                        clingen_raw = query_clingen_allele(classification.extracted_identifier)
+                        clingen_data = parse_caid_minimal(clingen_raw)
+                        annotations = get_variant_annotations(clingen_data, classification)
+                    
                     processing_time = time.time() - start_time
                     
                     # Store in session state

@@ -202,7 +202,11 @@ def get_variant_annotations(clingen_data, classification=None):
                 myv_url = f"https://myvariant.info/v1/variant/{query_id}?assembly=hg38"
                 myv_response = requests.get(myv_url, timeout=30)
                 if myv_response.ok:
-                    annotations['myvariant_data'] = myv_response.json()
+                    myv_raw = myv_response.json()
+                    # Handle list responses
+                    if isinstance(myv_raw, list) and len(myv_raw) > 0:
+                        myv_raw = myv_raw[0]
+                    annotations['myvariant_data'] = myv_raw
                 else:
                     annotations['errors'].append(f"MyVariant query failed: HTTP {myv_response.status_code}")
         except Exception as e:
@@ -210,12 +214,12 @@ def get_variant_annotations(clingen_data, classification=None):
     
     # Ensembl VEP query - try multiple approaches
     vep_input = None
+    vep_attempted = False
+    
+    # First try: Use MANE transcript from ClinGen
     if clingen_data.get('mane_ensembl'):
         vep_input = clingen_data['mane_ensembl']
-    elif classification and classification.query_type == 'rsid':
-        vep_input = classification.extracted_identifier
-    
-    if vep_input:
+        vep_attempted = True
         try:
             with st.spinner("Fetching Ensembl VEP data..."):
                 vep_url = f"https://rest.ensembl.org/vep/human/hgvs/{vep_input}"
@@ -224,9 +228,65 @@ def get_variant_annotations(clingen_data, classification=None):
                 if vep_response.ok:
                     annotations['vep_data'] = vep_response.json()
                 else:
-                    annotations['errors'].append(f"VEP query failed: HTTP {vep_response.status_code}")
+                    annotations['errors'].append(f"VEP query with MANE transcript failed: HTTP {vep_response.status_code}")
         except Exception as e:
-            annotations['errors'].append(f"VEP query error: {str(e)}")
+            annotations['errors'].append(f"VEP query with MANE transcript error: {str(e)}")
+    
+    # Second try: Direct RSID query (if RSID and MANE didn't work)
+    if (classification and classification.query_type == 'rsid' and 
+        not annotations['vep_data'] and not vep_attempted):
+        vep_input = classification.extracted_identifier
+        vep_attempted = True
+        try:
+            with st.spinner("Fetching Ensembl VEP data with RSID..."):
+                vep_url = f"https://rest.ensembl.org/vep/human/hgvs/{vep_input}"
+                vep_headers = {"Content-Type": "application/json", "Accept": "application/json"}
+                vep_response = requests.get(vep_url, headers=vep_headers, timeout=30)
+                if vep_response.ok:
+                    annotations['vep_data'] = vep_response.json()
+                else:
+                    annotations['errors'].append(f"VEP query with RSID failed: HTTP {vep_response.status_code}")
+        except Exception as e:
+            annotations['errors'].append(f"VEP query with RSID error: {str(e)}")
+    
+    # Third try: Use Ensembl transcript IDs from MyVariant (fallback)
+    if (not annotations['vep_data'] and annotations['myvariant_data'] and 
+        isinstance(annotations['myvariant_data'], dict)):
+        
+        # Extract Ensembl transcript IDs from dbnsfp data
+        dbnsfp = annotations['myvariant_data'].get('dbnsfp', {})
+        ensembl_data = dbnsfp.get('ensembl', {})
+        transcript_ids = ensembl_data.get('transcriptid', [])
+        
+        if transcript_ids:
+            # Take the first transcript ID (usually the canonical one)
+            if isinstance(transcript_ids, list) and len(transcript_ids) > 0:
+                primary_transcript = transcript_ids[0]
+            else:
+                primary_transcript = transcript_ids
+            
+            # Get HGVS coding notation from MyVariant
+            hgvs_coding = dbnsfp.get('hgvsc')
+            if hgvs_coding:
+                # Construct HGVS with transcript ID
+                if isinstance(hgvs_coding, list):
+                    hgvs_coding = hgvs_coding[0]
+                
+                vep_hgvs = f"{primary_transcript}:{hgvs_coding}"
+                
+                try:
+                    with st.spinner(f"Fetching VEP data with Ensembl transcript {primary_transcript}..."):
+                        vep_url = f"https://rest.ensembl.org/vep/human/hgvs/{vep_hgvs}"
+                        vep_headers = {"Content-Type": "application/json", "Accept": "application/json"}
+                        vep_response = requests.get(vep_url, headers=vep_headers, timeout=30)
+                        if vep_response.ok:
+                            annotations['vep_data'] = vep_response.json()
+                            annotations['vep_fallback_used'] = True
+                            st.success(f"VEP fallback successful using transcript {primary_transcript}")
+                        else:
+                            annotations['errors'].append(f"VEP fallback query failed: HTTP {vep_response.status_code}")
+                except Exception as e:
+                    annotations['errors'].append(f"VEP fallback query error: {str(e)}")
     
     return annotations
 

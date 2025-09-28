@@ -371,6 +371,20 @@ def display_comprehensive_myvariant_data(myvariant_data):
         st.warning("No MyVariant data available")
         return
     
+    # Handle case where MyVariant returns a list instead of dict
+    if isinstance(myvariant_data, list):
+        if len(myvariant_data) > 1:
+            st.info(f"Multiple variants found ({len(myvariant_data)}). Showing first result.")
+        if len(myvariant_data) > 0:
+            myvariant_data = myvariant_data[0]
+        else:
+            st.warning("Empty response from MyVariant")
+            return
+    
+    if not isinstance(myvariant_data, dict):
+        st.error("Unexpected data format from MyVariant")
+        return
+    
     # Create sub-tabs for different data categories
     data_tabs = st.tabs(["🧬 Basic Info", "🔬 Functional Predictions", "📊 Population Frequencies", "🏥 ClinVar", "🔗 External DBs"])
     
@@ -989,26 +1003,33 @@ def main():
                         # Extract additional info from MyVariant if available
                         if annotations['myvariant_data']:
                             myv_data = annotations['myvariant_data']
-                            clingen_info = myv_data.get('clingen', {})
-                            if clingen_info.get('caid'):
-                                clingen_data['CAid'] = clingen_info['caid']
                             
-                            # Try to get HGVS from ClinVar data
-                            clinvar_info = myv_data.get('clinvar', {})
-                            if clinvar_info.get('hgvs'):
-                                hgvs_data = clinvar_info['hgvs']
-                                if isinstance(hgvs_data, dict):
-                                    if hgvs_data.get('coding'):
-                                        # Try VEP with coding HGVS
-                                        coding_hgvs = hgvs_data['coding']
-                                        try:
-                                            vep_url = f"https://rest.ensembl.org/vep/human/hgvs/{coding_hgvs}"
-                                            vep_headers = {"Content-Type": "application/json", "Accept": "application/json"}
-                                            vep_response = requests.get(vep_url, headers=vep_headers, timeout=30)
-                                            if vep_response.ok:
-                                                annotations['vep_data'] = vep_response.json()
-                                        except:
-                                            pass  # VEP with RSID might have worked, so don't overwrite errors
+                            # Handle case where MyVariant returns a list instead of dict
+                            if isinstance(myv_data, list) and len(myv_data) > 0:
+                                myv_data = myv_data[0]  # Take the first result
+                                annotations['myvariant_data'] = myv_data  # Update the stored data
+                            
+                            if isinstance(myv_data, dict):
+                                clingen_info = myv_data.get('clingen', {})
+                                if clingen_info.get('caid'):
+                                    clingen_data['CAid'] = clingen_info['caid']
+                                
+                                # Try to get HGVS from ClinVar data
+                                clinvar_info = myv_data.get('clinvar', {})
+                                if clinvar_info.get('hgvs'):
+                                    hgvs_data = clinvar_info['hgvs']
+                                    if isinstance(hgvs_data, dict):
+                                        if hgvs_data.get('coding'):
+                                            # Try VEP with coding HGVS
+                                            coding_hgvs = hgvs_data['coding']
+                                            try:
+                                                vep_url = f"https://rest.ensembl.org/vep/human/hgvs/{coding_hgvs}"
+                                                vep_headers = {"Content-Type": "application/json", "Accept": "application/json"}
+                                                vep_response = requests.get(vep_url, headers=vep_headers, timeout=30)
+                                                if vep_response.ok:
+                                                    annotations['vep_data'] = vep_response.json()
+                                            except:
+                                                pass  # VEP with RSID might have worked, so don't overwrite errors
                     else:
                         # For HGVS notations, query ClinGen first
                         clingen_raw = query_clingen_allele(classification.extracted_identifier)
